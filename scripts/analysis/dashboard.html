@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CDN-SIM Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --bg-card: #23233f;
+    --fg: #e0e0e0;
+    --muted: #8a8aa3;
+    --grid: #3a3a52;
+    --quic: #4cc9f0;
+    --tcp: #f72585;
+    --accent: #ffbe0b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, serif;
+    min-height: 100vh;
+  }
+  header {
+    padding: 28px 32px 18px;
+    border-bottom: 1px solid var(--grid);
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+  }
+  header h1 {
+    margin: 0; font-size: 26px; font-weight: 600;
+    letter-spacing: 0.3px;
+    background: linear-gradient(90deg, var(--quic), var(--tcp));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  header .sub {
+    color: var(--muted); font-size: 14px;
+  }
+  main {
+    padding: 22px 28px 80px;
+    max-width: 1400px; margin: 0 auto;
+  }
+  .drop-zone {
+    border: 2px dashed var(--grid);
+    border-radius: 14px;
+    padding: 38px 24px;
+    text-align: center;
+    transition: all 180ms ease;
+    margin-bottom: 24px;
+    background: var(--bg-card);
+  }
+  .drop-zone.drag {
+    border-color: var(--quic);
+    background: rgba(76, 201, 240, 0.08);
+    transform: scale(1.01);
+  }
+  .drop-zone h2 { margin: 0 0 6px; font-size: 18px; font-weight: 500; }
+  .drop-zone p  { margin: 4px 0; color: var(--muted); font-size: 13px; }
+  .drop-zone label {
+    display: inline-block; margin-top: 12px; padding: 8px 16px;
+    background: var(--quic); color: var(--bg);
+    border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px;
+  }
+  .drop-zone input[type=file] { display: none; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--grid);
+    border-radius: 14px;
+    padding: 18px 20px 22px;
+    min-height: 340px;
+  }
+  .card h3 {
+    margin: 0 0 14px; font-size: 15px; font-weight: 600;
+    color: var(--fg); letter-spacing: 0.2px;
+  }
+  .card .chart-wrap { position: relative; height: 300px; }
+  .empty-hint {
+    color: var(--muted); font-size: 13px; text-align: center;
+    padding: 80px 12px;
+  }
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 10px 24px;
+    font-size: 12px; color: var(--muted);
+    background: rgba(26, 26, 46, 0.94);
+    border-top: 1px solid var(--grid);
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  footer a { color: var(--quic); text-decoration: none; }
+  @media (max-width: 640px) {
+    header { padding: 20px 18px 14px; }
+    header h1 { font-size: 21px; }
+    main { padding: 16px 14px 90px; }
+    .grid { grid-template-columns: 1fr; gap: 16px; }
+    .card { padding: 14px 14px 18px; min-height: 300px; }
+    .card .chart-wrap { height: 260px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>CDN-SIM Dashboard</h1>
+  <div class="sub" id="subtitle">Load a summary.json file to begin.</div>
+</header>
+<main>
+  <div class="drop-zone" id="drop">
+    <h2>Drop summary.json (and optional enhanced_comparison.json) here</h2>
+    <p>Or click to browse. Everything runs locally in your browser.</p>
+    <label>
+      Choose files
+      <input type="file" id="file-input" multiple accept="application/json,.json" />
+    </label>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Segment Latency Percentiles</h3>
+      <div class="chart-wrap"><canvas id="chart-latency"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>QUIC vs TCP Improvement Summary</h3>
+      <div class="chart-wrap"><canvas id="chart-improvement"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Goodput Distribution (p50 / p95 / p99)</h3>
+      <div class="chart-wrap"><canvas id="chart-goodput"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Cache Hit · Rebuffer · Startup Latency</h3>
+      <div class="chart-wrap"><canvas id="chart-multi"></canvas></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div>Drop <code>summary.json</code> + optional <code>enhanced_comparison.json</code> to populate all charts.</div>
+  <div><a href="./README.md">README</a> · cdn-sim</div>
+</footer>
+
+<script>
+(() => {
+  const QUIC = "#4cc9f0";
+  const TCP  = "#f72585";
+  const FG   = "#e0e0e0";
+  const GRID = "#3a3a52";
+
+  Chart.defaults.color = FG;
+  Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', serif";
+  Chart.defaults.borderColor = GRID;
+
+  const charts = {};
+  const state  = { summary: null, enhanced: null };
+
+  const subtitle = document.getElementById("subtitle");
+
+  function gridOpts() {
+    return {
+      ticks: { color: FG },
+      grid:  { color: GRID, drawBorder: false },
+    };
+  }
+  function baseOpts(extras) {
+    return Object.assign({
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: FG } },
+        tooltip: { backgroundColor: "#23233f", borderColor: GRID, borderWidth: 1 }
+      },
+      scales: { x: gridOpts(), y: gridOpts() }
+    }, extras || {});
+  }
+
+  function destroy(id) {
+    if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+  }
+
+  function get(obj, ...keys) {
+    let cur = obj;
+    for (const k of keys) {
+      if (cur == null || typeof cur !== "object") return undefined;
+      cur = cur[k];
+    }
+    return cur;
+  }
+
+  function renderLatency() {
+    destroy("latency");
+    const ctx = document.getElementById("chart-latency");
+    const bp  = get(state.summary, "by_protocol") || {};
+    const tcp = bp["tcp-h2"] || {}, quic = bp["quic-h3"] || {};
+    const pcts = ["p50", "p75", "p90", "p95", "p99"];
+    const tcpVals  = pcts.map(p => Number(get(tcp,  "segment_latency_ms", p) || 0));
+    const quicVals = pcts.map(p => Number(get(quic, "segment_latency_ms", p) || 0));
+
+    charts.latency = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: pcts.map(p => p.toUpperCase()),
+        datasets: [
+          { label: "TCP/H2",  data: tcpVals,  backgroundColor: TCP  },
+          { label: "QUIC/H3", data: quicVals, backgroundColor: QUIC },
+        ]
+      },
+      options: baseOpts({
+        scales: {
+          x: gridOpts(),
+          y: Object.assign({}, gridOpts(), { title: { display: true, text: "Latency (ms)", color: FG } })
+        }
+      })
+    });
+  }
+
+  function renderImprovement() {
+    destroy("improvement");
+    const ctx = document.getElementById("chart-improvement");
+    const improvements = get(state.enhanced, "improvements") || {};
+    const keys = Object.keys(improvements);
+    if (keys.length === 0) {
+      // Fallback to summary-derived values
+      charts.improvement = new Chart(ctx, {
+        type: "bar", data: { labels: ["(no enhanced_comparison.json loaded)"], datasets: [{ data: [0], backgroundColor: GRID }] },
+        options: baseOpts({ indexAxis: "y", plugins: { legend: { display: false } } })
+      });
+      return;
+    }
+    const sorted = keys.map(k => [k, improvements[k]])
+      .sort((a, b) => (a[1].improvement_pct || 0) - (b[1].improvement_pct || 0));
+    const labels = sorted.map(x => x[0].replace(/_/g, " "));
+    const vals   = sorted.map(x => Number(x[1].improvement_pct || 0));
+    const colors = sorted.map(x => {
+      const sig = x[1].statistically_significant;
+      const v   = Number(x[1].improvement_pct || 0);
+      if (sig && v > 0) return "#43aa8b";
+      if (sig && v < 0) return TCP;
+      return "#6c757d";
+    });
+
+    charts.improvement = new Chart(ctx, {
+      type: "bar",
+      data: { labels, datasets: [{ label: "Improvement %", data: vals, backgroundColor: colors }] },
+      options: baseOpts({
+        indexAxis: "y",
+        plugins: { legend: { display: false } },
+        scales: {
+          x: Object.assign({}, gridOpts(), { title: { display: true, text: "Improvement %", color: FG } }),
+          y: gridOpts()
+        }
+      })
+    });
+  }
+
+  function renderGoodput() {
+    destroy("goodput");
+    const ctx = document.getElementById("chart-goodput");
+    const bp  = get(state.summary, "by_protocol") || {};
+    const tcp = bp["tcp-h2"] || {}, quic = bp["quic-h3"] || {};
+    const pcts = ["p50", "p95", "p99"];
+    const tcpVals  = pcts.map(p => Number(get(tcp,  "goodput_mbps", p) || 0));
+    const quicVals = pcts.map(p => Number(get(quic, "goodput_mbps", p) || 0));
+
+    charts.goodput = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: pcts.map(p => p.toUpperCase()),
+        datasets: [
+          { label: "TCP/H2",  data: tcpVals,  backgroundColor: TCP  },
+          { label: "QUIC/H3", data: quicVals, backgroundColor: QUIC },
+        ]
+      },
+      options: baseOpts({
+        scales: {
+          x: gridOpts(),
+          y: Object.assign({}, gridOpts(), { title: { display: true, text: "Goodput (Mbps)", color: FG } })
+        }
+      })
+    });
+  }
+
+  function renderMulti() {
+    destroy("multi");
+    const ctx = document.getElementById("chart-multi");
+    const bp  = get(state.summary, "by_protocol") || {};
+    const tcp = bp["tcp-h2"] || {}, quic = bp["quic-h3"] || {};
+
+    const tcpCache = Number(get(tcp, "cache_hit_rate_pct", "mean") || 0);
+    const qCache   = Number(get(quic, "cache_hit_rate_pct", "mean") || 0);
+    const tcpReb   = Number(get(tcp, "rebuffer_count", "mean") || 0);
+    const qReb     = Number(get(quic, "rebuffer_count", "mean") || 0);
+    const tcpStart = Number(get(tcp, "startup_latency_ms", "p95") || 0);
+    const qStart   = Number(get(quic, "startup_latency_ms", "p95") || 0);
+
+    charts.multi = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: ["Cache Hit % (mean)", "Rebuffers (mean)", "Startup p95 (ms)"],
+        datasets: [
+          { label: "TCP/H2",  data: [tcpCache, tcpReb, tcpStart], backgroundColor: TCP,  yAxisID: "y" },
+          { label: "QUIC/H3", data: [qCache,   qReb,   qStart],   backgroundColor: QUIC, yAxisID: "y" },
+        ]
+      },
+      options: baseOpts({
+        scales: {
+          x: gridOpts(),
+          y: Object.assign({}, gridOpts(), { type: "logarithmic", title: { display: true, text: "value (log)", color: FG } })
+        }
+      })
+    });
+  }
+
+  function refresh() {
+    const bp  = get(state.summary, "by_protocol") || {};
+    const tcp = bp["tcp-h2"] || {}, quic = bp["quic-h3"] || {};
+    const sessions = Number(tcp.num_sessions || 0) + Number(quic.num_sessions || 0);
+    const scenario = get(state.summary, "config", "Name") ||
+                     get(state.summary, "config", "name") ||
+                     get(state.enhanced, "scenario") || "unknown";
+    subtitle.textContent = `scenario: ${scenario} · ${sessions} sessions`;
+
+    renderLatency();
+    renderImprovement();
+    renderGoodput();
+    renderMulti();
+  }
+
+  function classify(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    if (obj.by_protocol) return "summary";
+    if (obj.improvements) return "enhanced";
+    if (obj.improvement && Array.isArray(obj.improvement)) return "legacy";
+    return null;
+  }
+
+  function loadFiles(files) {
+    const jobs = [];
+    for (const f of files) {
+      jobs.push(new Promise((resolve) => {
+        const r = new FileReader();
+        r.onload = () => {
+          try {
+            const data = JSON.parse(r.result);
+            const kind = classify(data);
+            if (kind === "summary")  state.summary  = data;
+            if (kind === "enhanced") state.enhanced = data;
+            if (kind === "legacy" && !state.enhanced) state.enhanced = null;
+          } catch (e) {
+            console.error("Failed to parse", f.name, e);
+            alert(`Could not parse ${f.name}: ${e.message}`);
+          }
+          resolve();
+        };
+        r.readAsText(f);
+      }));
+    }
+    Promise.all(jobs).then(() => {
+      if (!state.summary) {
+        alert("No summary.json found in the dropped files.");
+        return;
+      }
+      refresh();
+    });
+  }
+
+  const drop = document.getElementById("drop");
+  const input = document.getElementById("file-input");
+  ["dragenter", "dragover"].forEach(ev => {
+    drop.addEventListener(ev, e => {
+      e.preventDefault(); e.stopPropagation();
+      drop.classList.add("drag");
+    });
+  });
+  ["dragleave", "drop"].forEach(ev => {
+    drop.addEventListener(ev, e => {
+      e.preventDefault(); e.stopPropagation();
+      drop.classList.remove("drag");
+    });
+  });
+  drop.addEventListener("drop", e => {
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) loadFiles(files);
+  });
+  input.addEventListener("change", e => {
+    if (e.target.files && e.target.files.length) loadFiles(e.target.files);
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+# docker/Dockerfile.base
+#
+# REFERENCE ONLY — this file is NOT built directly by docker-compose.
+#
+# The cdn-sim containers (origin, edge, client) each use self-contained
+# multi-stage Dockerfiles that inherit the same builder + runtime pattern
+# documented here. Keeping them self-contained avoids chicken-and-egg
+# issues with naming intermediate base images and lets `docker compose
+# build` run any single service without a prerequisite image.
+#
+# Common builder stage (used by Dockerfile.origin, Dockerfile.edge,
+# Dockerfile.client):
+#
+#     FROM golang:1.23-bookworm AS builder
+#     WORKDIR /app
+#     COPY go.mod go.sum ./
+#     RUN go mod download
+#     COPY . .
+#     RUN go build -o /<binary> ./cmd/<binary>
+#
+# Common runtime stage:
+#
+#     FROM debian:bookworm-slim
+#     RUN apt-get update && apt-get install -y \
+#             iproute2 \
+#             iptables \
+#             ca-certificates \
+#             curl \
+#         && rm -rf /var/lib/apt/lists/*
+#     WORKDIR /app
+#
+# The runtime image deliberately includes:
+#   - iproute2  : provides `tc` for netem shaping (NET_ADMIN required)
+#   - iptables  : optional firewall manipulation inside containers
+#   - curl      : used by docker-compose healthchecks (`curl -fk`)
+#   - ca-certs  : base trust store (self-signed certs added separately)
+#
+# The Go version is pinned to 1.23-bookworm because Docker Hub has a
+# stable tag for it. The project's go.mod declares a newer toolchain
+# version; the Go toolchain auto-downloads the required toolchain at
+# build time when GOTOOLCHAIN=auto (the default in 1.21+).
+#
+# If you need to build the base runtime image on its own for debugging,
+# you can copy the runtime block above into a standalone Dockerfile and
+# build it with `docker build -f docker/Dockerfile.base.runtime .`.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \
+        iproute2 \
+        iptables \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app

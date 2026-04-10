@@ -1,0 +1,191 @@
+# docker/docker-compose.yml — cdn-sim Phase 2 emulated-mode topology.
+#
+# IMPORTANT: TLS certs MUST be generated before `docker compose up`:
+#     bash docker/certs/generate.sh
+# Certs are mounted at runtime (not baked into images) so private-key
+# material never appears in a Docker image layer. See the `volumes:`
+# stanza on each service.
+#
+# Topology:
+#   client  --client-net-->  edge-sg / edge-mumbai
+#   edges   --shield-net-->  shield
+#   shield  --origin-net-->  origin
+#
+# Networks:
+#   origin-net  172.20.0.0/24  (shield <-> origin)
+#   shield-net  172.21.0.0/24  (edges  <-> shield)
+#   client-net  172.22.0.0/24  (client <-> edges)
+#
+# Capabilities: NET_ADMIN is granted only to services that actually run
+# `tc qdisc` / `tc netem` against their interfaces (shield + edges + client).
+# origin does not need it.
+
+networks:
+  origin-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  shield-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+  client-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+
+services:
+  origin:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.origin
+    image: cdn-sim/origin:latest
+    # No NET_ADMIN: origin does not apply netem to itself; shaping on the
+    # origin link happens on shield's origin-net interface.
+    networks:
+      origin-net:
+        ipv4_address: 172.20.0.10
+    volumes:
+      - ./certs:/app/certs:ro
+    command:
+      - "--addr-h2=:8443"
+      - "--addr-h3=:8444"
+      - "--tls-cert=/app/certs/server.crt"
+      - "--tls-key=/app/certs/server.key"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--cacert", "/app/certs/ca.crt", "https://localhost:8443/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  shield:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.edge
+    image: cdn-sim/edge:latest
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      origin:
+        condition: service_healthy
+    networks:
+      origin-net:
+        ipv4_address: 172.20.0.20
+      shield-net:
+        ipv4_address: 172.21.0.20
+    volumes:
+      - ./certs:/app/certs:ro
+    command:
+      - "--addr-h2=:8443"
+      - "--addr-h3=:8444"
+      - "--tls-cert=/app/certs/server.crt"
+      - "--tls-key=/app/certs/server.key"
+      - "--ca-cert=/app/certs/ca.crt"
+      - "--origin-url-h2=https://172.20.0.10:8443"
+      - "--origin-url-h3=https://172.20.0.10:8444"
+      - "--origin-transport=tcp"
+      - "--cache-size-mb=2048"
+      - "--edge-id=shield"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--cacert", "/app/certs/ca.crt", "https://localhost:8443/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  edge-sg:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.edge
+    image: cdn-sim/edge:latest
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      shield:
+        condition: service_healthy
+    networks:
+      shield-net:
+        ipv4_address: 172.21.0.30
+      client-net:
+        ipv4_address: 172.22.0.30
+    volumes:
+      - ./certs:/app/certs:ro
+    command:
+      - "--addr-h2=:8443"
+      - "--addr-h3=:8444"
+      - "--tls-cert=/app/certs/server.crt"
+      - "--tls-key=/app/certs/server.key"
+      - "--ca-cert=/app/certs/ca.crt"
+      - "--origin-url-h2=https://172.21.0.20:8443"
+      - "--origin-url-h3=https://172.21.0.20:8444"
+      - "--origin-transport=quic"
+      - "--cache-size-mb=512"
+      - "--edge-id=edge-sg"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--cacert", "/app/certs/ca.crt", "https://localhost:8443/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  edge-mumbai:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.edge
+    image: cdn-sim/edge:latest
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      shield:
+        condition: service_healthy
+    networks:
+      shield-net:
+        ipv4_address: 172.21.0.40
+      client-net:
+        ipv4_address: 172.22.0.40
+    volumes:
+      - ./certs:/app/certs:ro
+    command:
+      - "--addr-h2=:8443"
+      - "--addr-h3=:8444"
+      - "--tls-cert=/app/certs/server.crt"
+      - "--tls-key=/app/certs/server.key"
+      - "--ca-cert=/app/certs/ca.crt"
+      - "--origin-url-h2=https://172.21.0.20:8443"
+      - "--origin-url-h3=https://172.21.0.20:8444"
+      - "--origin-transport=quic"
+      - "--cache-size-mb=512"
+      - "--edge-id=edge-mumbai"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--cacert", "/app/certs/ca.crt", "https://localhost:8443/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  client:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.client
+    image: cdn-sim/client:latest
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      edge-sg:
+        condition: service_healthy
+      edge-mumbai:
+        condition: service_healthy
+    networks:
+      client-net:
+        ipv4_address: 172.22.0.100
+    volumes:
+      - ../configs:/configs:ro
+      - ../results:/results
+      - ./certs:/app/certs:ro
+    # Default: keep running so `docker compose exec client ...` works.
+    # Override via `docker compose run client <cdnsim args>` for one-shot runs.
+    command: ["sleep", "infinity"]

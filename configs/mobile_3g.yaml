@@ -1,0 +1,68 @@
+name: mobile_3g
+description: Poor mobile network — 5% GE loss, 100ms RTT, 2 Mbps with variability.
+seed: 20260409
+
+topology:
+  origin_location:
+    latitude: 38.9
+    longitude: -77.0
+  origin_network:
+    base_rtt_ms: 150
+    bandwidth_mbps: 1000
+    loss_model:
+      type: none
+    jitter_ms: 2
+  edges:
+    - id: mobile_pop
+      geo_tag: asia
+      latitude: 1.35
+      longitude: 103.82
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 100
+        bandwidth_mbps: 2
+        loss_model:
+          type: gilbert_elliott
+          p_good_to_bad: 0.04
+          p_bad_to_good: 0.2
+          loss_in_bad_state: 0.6
+        jitter_ms: 15
+      network_to_origin:
+        base_rtt_ms: 150
+        bandwidth_mbps: 1000
+        loss_model:
+          type: none
+        jitter_ms: 2
+
+content:
+  catalog_size: 100
+  zipf_alpha: 1.1
+  duration_seconds: 60
+  segment_seconds: 4
+
+clients:
+  count: 100
+  policy: latency_based
+  geos: [asia]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: arc
+  size_bytes: 536870912
+  ttl_seconds: 3600
+
+bandwidth:
+  enabled: true
+  variability: 0.4
+
+quic_settings:
+  zero_rtt_rate: 0.85
+
+runs: 5
+
+output:
+  dir: results/mobile_3g
+  emit_csv: true
+  emit_json: true

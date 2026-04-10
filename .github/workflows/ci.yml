@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race)
+        run: go test ./... -race -count=1 -timeout 5m
+      - name: Coverage
+        run: |
+          go test ./... -coverprofile=coverage.out -timeout 5m
+          go tool cover -func=coverage.out | grep total
+      - name: Benchmark
+        run: go test ./internal/transport/modeled/... ./internal/cache/... -bench=. -benchmem -count=1 -run=^$

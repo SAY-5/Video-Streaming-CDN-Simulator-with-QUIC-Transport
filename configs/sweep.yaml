@@ -1,0 +1,66 @@
+name: sweep
+description: >
+  Parameter sweep over loss and RTT. The runner processes this as a single
+  scenario; for a true cross-product sweep use scripts/sweep.sh which
+  overrides loss and rtt at render time.
+seed: 20260409
+
+topology:
+  origin_location:
+    latitude: 38.9
+    longitude: -77.0
+  origin_network:
+    base_rtt_ms: 100
+    bandwidth_mbps: 1000
+    loss_model:
+      type: uniform
+      uniform_percent: 5
+    jitter_ms: 5
+  edges:
+    - id: sweep1
+      geo_tag: asia
+      latitude: 1.35
+      longitude: 103.82
+      capacity: 1000
+      client_profile:
+        base_rtt_ms: 100
+        bandwidth_mbps: 20
+        loss_model:
+          type: uniform
+          uniform_percent: 5
+        jitter_ms: 5
+      network_to_origin:
+        base_rtt_ms: 100
+        bandwidth_mbps: 1000
+        loss_model:
+          type: uniform
+          uniform_percent: 5
+        jitter_ms: 5
+
+content:
+  catalog_size: 200
+  zipf_alpha: 1.1
+  duration_seconds: 60
+  segment_seconds: 4
+
+clients:
+  count: 100
+  policy: latency_based
+  geos: [asia]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: arc
+  size_bytes: 1073741824
+
+quic_settings:
+  zero_rtt_rate: 0.85
+
+runs: 3
+
+output:
+  dir: results/sweep
+  emit_csv: true
+  emit_json: true

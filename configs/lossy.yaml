@@ -1,0 +1,84 @@
+name: lossy
+description: 3% uniform loss, moderate RTT, moderate QUIC advantage expected.
+seed: 20260409
+
+topology:
+  origin_location:
+    latitude: 38.9
+    longitude: -77.0
+  origin_network:
+    base_rtt_ms: 50
+    bandwidth_mbps: 1000
+    loss_model:
+      type: uniform
+      uniform_percent: 3
+    jitter_ms: 5
+
+  edges:
+    - id: edge1
+      geo_tag: us-east
+      latitude: 40.71
+      longitude: -74.00
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 20
+        bandwidth_mbps: 30
+        loss_model:
+          type: uniform
+          uniform_percent: 3
+        jitter_ms: 5
+      network_to_origin:
+        base_rtt_ms: 20
+        bandwidth_mbps: 1000
+        loss_model:
+          type: uniform
+          uniform_percent: 3
+        jitter_ms: 5
+    - id: edge2
+      geo_tag: us-west
+      latitude: 37.77
+      longitude: -122.42
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 20
+        bandwidth_mbps: 30
+        loss_model:
+          type: uniform
+          uniform_percent: 3
+        jitter_ms: 5
+      network_to_origin:
+        base_rtt_ms: 60
+        bandwidth_mbps: 1000
+        loss_model:
+          type: uniform
+          uniform_percent: 3
+        jitter_ms: 5
+
+content:
+  catalog_size: 150
+  zipf_alpha: 1.1
+  duration_seconds: 60
+  segment_seconds: 4
+
+clients:
+  count: 150
+  policy: latency_based
+  geos: [us-east, us-west]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: lru
+  size_bytes: 536870912
+  ttl_seconds: 3600
+
+quic_settings:
+  zero_rtt_rate: 0.85
+
+runs: 5
+
+output:
+  dir: results/lossy
+  emit_csv: true
+  emit_json: true

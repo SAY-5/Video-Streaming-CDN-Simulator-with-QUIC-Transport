@@ -1,0 +1,87 @@
+name: emulated-harsh
+description: >
+  Real QUIC vs TCP through the harsh_asia netem profile — high loss on every
+  hop so QUIC's HOL-blocking elimination overcomes userspace CPU overhead.
+  200 sessions × 5 runs × 2 protocols ≈ 2000 sessions total; the statistical
+  power is high enough to produce a tight CI on a loopback docker bridge.
+mode: emulated
+seed: 20260409
+
+emulated:
+  edges:
+    - id: edge-sg
+      h2_url: https://172.22.0.30:8443
+      h3_url: https://172.22.0.30:8444
+    - id: edge-mumbai
+      h2_url: https://172.22.0.40:8443
+      h3_url: https://172.22.0.40:8444
+  ca_cert_path: /app/certs/ca.crt
+  netem_profile: harsh_asia
+
+# Required by schema even in emulated mode; ignored at runtime.
+topology:
+  origin_location: { latitude: 38.9, longitude: -77.0 }
+  origin_network:
+    base_rtt_ms: 220
+    bandwidth_mbps: 500
+    loss_model: { type: none }
+  edges:
+    - id: edge-sg
+      geo_tag: asia
+      latitude: 1.35
+      longitude: 103.82
+      capacity: 2000
+      client_profile:
+        base_rtt_ms: 80
+        bandwidth_mbps: 50
+        loss_model: { type: none }
+      network_to_origin:
+        base_rtt_ms: 220
+        bandwidth_mbps: 500
+        loss_model: { type: none }
+    - id: edge-mumbai
+      geo_tag: asia
+      latitude: 19.07
+      longitude: 72.87
+      capacity: 2000
+      client_profile:
+        base_rtt_ms: 100
+        bandwidth_mbps: 30
+        loss_model: { type: none }
+      network_to_origin:
+        base_rtt_ms: 280
+        bandwidth_mbps: 500
+        loss_model: { type: none }
+
+content:
+  catalog_size: 60
+  zipf_alpha: 1.15
+  duration_seconds: 20
+  segment_seconds: 4
+
+clients:
+  count: 200
+  policy: latency_based
+  geos: [asia]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: lru
+  size_bytes: 268435456
+
+quic_settings:
+  zero_rtt_rate: 0.85
+
+playback:
+  prefetch_depth: 4
+  max_buffer_seconds: 30
+  startup_threshold_seconds: 2
+
+runs: 5
+
+output:
+  dir: /results/emulated_harsh
+  emit_csv: true
+  emit_json: true

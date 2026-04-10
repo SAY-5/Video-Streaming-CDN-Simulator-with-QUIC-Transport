@@ -1,0 +1,108 @@
+name: reproduce_35pct
+description: >
+  Showcase scenario: Asia edges reach a US-East origin over a lossy path with
+  Gilbert-Elliott bursty loss, realistic RTT, and cold ARC caches. This is the
+  canonical configuration we use to target ~35%% p95 segment-latency improvement
+  from QUIC over TCP/H2.
+seed: 20260409
+
+topology:
+  origin_location:
+    latitude: 38.9
+    longitude: -77.0
+  origin_network:
+    base_rtt_ms: 200
+    bandwidth_mbps: 1000
+    loss_model:
+      type: gilbert_elliott
+      p_good_to_bad: 0.03
+      p_bad_to_good: 0.3
+      loss_in_bad_state: 0.4
+    jitter_ms: 8
+
+  edges:
+    - id: singapore
+      geo_tag: asia
+      latitude: 1.35
+      longitude: 103.82
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 30
+        bandwidth_mbps: 20
+        loss_model:
+          type: gilbert_elliott
+          p_good_to_bad: 0.03
+          p_bad_to_good: 0.3
+          loss_in_bad_state: 0.4
+        jitter_ms: 8
+      network_to_origin:
+        base_rtt_ms: 200
+        bandwidth_mbps: 1000
+        loss_model:
+          type: gilbert_elliott
+          p_good_to_bad: 0.03
+          p_bad_to_good: 0.3
+          loss_in_bad_state: 0.4
+        jitter_ms: 8
+    - id: mumbai
+      geo_tag: asia
+      latitude: 19.07
+      longitude: 72.87
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 40
+        bandwidth_mbps: 15
+        loss_model:
+          type: gilbert_elliott
+          p_good_to_bad: 0.03
+          p_bad_to_good: 0.3
+          loss_in_bad_state: 0.4
+        jitter_ms: 8
+      network_to_origin:
+        base_rtt_ms: 220
+        bandwidth_mbps: 1000
+        loss_model:
+          type: gilbert_elliott
+          p_good_to_bad: 0.03
+          p_bad_to_good: 0.3
+          loss_in_bad_state: 0.4
+        jitter_ms: 8
+
+content:
+  catalog_size: 200
+  zipf_alpha: 1.1
+  duration_seconds: 120
+  segment_seconds: 4
+
+clients:
+  count: 200
+  policy: geo_affinity
+  geos: [asia]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: arc
+  size_bytes: 1073741824
+  warm_up: false
+  ttl_seconds: 3600
+
+shield:
+  size_bytes: 4294967296
+  ttl_seconds: 7200
+
+quic_settings:
+  zero_rtt_rate: 0.85
+
+playback:
+  prefetch_depth: 3
+  max_buffer_seconds: 30
+  startup_threshold_seconds: 2
+
+runs: 10
+
+output:
+  dir: results/reproduce_35pct
+  emit_csv: true
+  emit_json: true

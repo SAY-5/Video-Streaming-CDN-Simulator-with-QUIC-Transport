@@ -1,0 +1,39 @@
+{
+  "config": {
+    "Name": "synthetic_test",
+    "Description": "Synthetic summary.json used by compare.py tests."
+  },
+  "duration_ms": 12500,
+  "by_protocol": {
+    "tcp-h2": {
+      "protocol": "tcp-h2",
+      "abr": "buffer_based",
+      "num_sessions": 500,
+      "segment_ttfb_ms":   { "p50": 14,  "p75": 22,  "p90": 33,  "p95": 45,  "p99": 78,  "min": 2,  "max": 120 },
+      "segment_latency_ms":{ "p50": 2590,"p75": 4820,"p90": 7410,"p95": 9143,"p99": 13050,"min": 40,"max": 21000 },
+      "startup_latency_ms":{ "p50": 860, "p75": 1140,"p90": 1480,"p95": 1720,"p99": 2150,"min": 180,"max": 2600 },
+      "rebuffer_count":        { "mean": 3.8,  "std_dev": 2.1,  "min": 0, "max": 12 },
+      "rebuffer_duration_ms":  { "mean": 16500,"std_dev": 8200, "min": 0, "max": 52000 },
+      "avg_bitrate_kbps":      { "mean": 4520, "std_dev": 820,  "min": 1200, "max": 8000 },
+      "bitrate_changes":       { "mean": 3.4,  "std_dev": 1.6,  "min": 0, "max": 9 },
+      "cache_hit_rate_pct":    { "mean": 48.2, "std_dev": 12.1, "min": 0, "max": 100 },
+      "goodput_mbps":          { "p50": 12.4, "p75": 17.6, "p90": 22.3, "p95": 26.8, "p99": 32.1, "min": 0.4, "max": 38.0 },
+      "hol_block_events_per_session": { "mean": 14.6, "std_dev": 9.8, "min": 0, "max": 42 }
+    },
+    "quic-h3": {
+      "protocol": "quic-h3",
+      "abr": "buffer_based",
+      "num_sessions": 500,
+      "segment_ttfb_ms":   { "p50": 11,  "p75": 18,  "p90": 26,  "p95": 34,  "p99": 58,  "min": 1,  "max": 95 },
+      "segment_latency_ms":{ "p50": 2152,"p75": 3610,"p90": 4805,"p95": 5407,"p99": 7420, "min": 28, "max": 11900 },
+      "startup_latency_ms":{ "p50": 520, "p75": 720, "p90": 910, "p95": 1060,"p99": 1320,"min": 120,"max": 1550 },
+      "rebuffer_count":        { "mean": 1.2,  "std_dev": 1.0,  "min": 0, "max": 5 },
+      "rebuffer_duration_ms":  { "mean": 3250, "std_dev": 2100, "min": 0, "max": 14000 },
+      "avg_bitrate_kbps":      { "mean": 5120, "std_dev": 640,  "min": 1600, "max": 8000 },
+      "bitrate_changes":       { "mean": 2.1,  "std_dev": 1.2,  "min": 0, "max": 6 },
+      "cache_hit_rate_pct":    { "mean": 52.7, "std_dev": 11.4, "min": 0, "max": 100 },
+      "goodput_mbps":          { "p50": 14.8, "p75": 19.2, "p90": 24.1, "p95": 28.5, "p99": 33.4, "min": 0.6, "max": 39.2 },
+      "hol_block_events_per_session": { "mean": 0, "std_dev": 0, "min": 0, "max": 0 }
+    }
+  }
+}

@@ -1,0 +1,63 @@
+name: satellite
+description: High-latency (300ms) low-loss — 0-RTT handshake advantage dominates.
+seed: 20260409
+
+topology:
+  origin_location:
+    latitude: 38.9
+    longitude: -77.0
+  origin_network:
+    base_rtt_ms: 300
+    bandwidth_mbps: 50
+    loss_model:
+      type: uniform
+      uniform_percent: 1
+    jitter_ms: 10
+  edges:
+    - id: sat
+      geo_tag: asia
+      latitude: 1.35
+      longitude: 103.82
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 300
+        bandwidth_mbps: 25
+        loss_model:
+          type: uniform
+          uniform_percent: 1
+        jitter_ms: 10
+      network_to_origin:
+        base_rtt_ms: 300
+        bandwidth_mbps: 50
+        loss_model:
+          type: uniform
+          uniform_percent: 1
+        jitter_ms: 10
+
+content:
+  catalog_size: 100
+  zipf_alpha: 1.1
+  duration_seconds: 60
+  segment_seconds: 4
+
+clients:
+  count: 80
+  policy: latency_based
+  geos: [asia]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: lru
+  size_bytes: 536870912
+
+quic_settings:
+  zero_rtt_rate: 0.9
+
+runs: 5
+
+output:
+  dir: results/satellite
+  emit_csv: true
+  emit_json: true

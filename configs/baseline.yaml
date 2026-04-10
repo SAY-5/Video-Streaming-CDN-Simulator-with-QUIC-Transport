@@ -1,0 +1,79 @@
+name: baseline
+description: Low-loss control scenario — TCP should be ~equal to QUIC here.
+seed: 20260409
+
+topology:
+  origin_location:
+    latitude: 38.9
+    longitude: -77.0
+  origin_network:
+    base_rtt_ms: 180
+    bandwidth_mbps: 1000
+    loss_model:
+      type: none
+    jitter_ms: 1
+  edges:
+    - id: sg
+      geo_tag: asia
+      latitude: 1.35
+      longitude: 103.82
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 25
+        bandwidth_mbps: 50
+        loss_model:
+          type: none
+        jitter_ms: 1
+      network_to_origin:
+        base_rtt_ms: 180
+        bandwidth_mbps: 1000
+        loss_model:
+          type: none
+        jitter_ms: 1
+    - id: frankfurt
+      geo_tag: europe
+      latitude: 50.11
+      longitude: 8.68
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 25
+        bandwidth_mbps: 50
+        loss_model:
+          type: none
+        jitter_ms: 1
+      network_to_origin:
+        base_rtt_ms: 100
+        bandwidth_mbps: 1000
+        loss_model:
+          type: none
+        jitter_ms: 1
+
+content:
+  catalog_size: 200
+  zipf_alpha: 1.1
+  duration_seconds: 60
+  segment_seconds: 4
+
+clients:
+  count: 100
+  policy: latency_based
+  geos: [asia, europe]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: arc
+  size_bytes: 1073741824
+  warm_up: false
+  ttl_seconds: 3600
+
+quic_settings:
+  zero_rtt_rate: 0.85
+
+runs: 3
+
+output:
+  dir: results/baseline
+  emit_csv: true
+  emit_json: true

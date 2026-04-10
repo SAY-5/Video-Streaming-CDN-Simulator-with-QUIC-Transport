@@ -1,0 +1,25 @@
+# docker/Dockerfile.client — builds the cdnsim CLI client image.
+# Carries the CA cert so the client can validate the self-signed TLS
+# certs presented by the in-cluster origin/shield/edge servers.
+FROM golang:1.23-bookworm AS builder
+WORKDIR /app
+ENV GOTOOLCHAIN=auto
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o /cdnsim ./cmd/cdnsim
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \
+        iproute2 \
+        iptables \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /cdnsim /app/cdnsim
+# Certs and CA are mounted from docker/certs at runtime, not baked in.
+VOLUME ["/configs", "/results", "/app/certs"]
+# No ENTRYPOINT: compose overrides the command per invocation. The
+# default sleep lets `docker compose exec client /app/cdnsim ...` work.
+CMD ["sleep", "infinity"]

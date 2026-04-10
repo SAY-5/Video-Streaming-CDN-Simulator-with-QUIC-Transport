@@ -1,0 +1,76 @@
+name: depth1_startup
+description: >
+  PrefetchDepth=1 (no HOL blocking exercised). The only QUIC advantage
+  here is the handshake: 0-RTT saves 200ms startup latency on a 200ms
+  RTT link. This config demonstrates that cdn-sim produces a meaningful
+  result WITHOUT relying on the prefetch knob.
+seed: 20260409
+
+topology:
+  origin_location: { latitude: 38.9, longitude: -77.0 }
+  origin_network:
+    base_rtt_ms: 200
+    bandwidth_mbps: 1000
+    loss_model:
+      type: gilbert_elliott
+      p_good_to_bad: 0.03
+      p_bad_to_good: 0.3
+      loss_in_bad_state: 0.4
+    jitter_ms: 8
+  edges:
+    - id: singapore
+      geo_tag: asia
+      latitude: 1.35
+      longitude: 103.82
+      capacity: 500
+      client_profile:
+        base_rtt_ms: 30
+        bandwidth_mbps: 20
+        loss_model:
+          type: gilbert_elliott
+          p_good_to_bad: 0.03
+          p_bad_to_good: 0.3
+          loss_in_bad_state: 0.4
+        jitter_ms: 8
+      network_to_origin:
+        base_rtt_ms: 200
+        bandwidth_mbps: 1000
+        loss_model:
+          type: gilbert_elliott
+          p_good_to_bad: 0.03
+          p_bad_to_good: 0.3
+          loss_in_bad_state: 0.4
+        jitter_ms: 8
+
+content:
+  catalog_size: 100
+  zipf_alpha: 1.1
+  duration_seconds: 20
+  segment_seconds: 4
+
+clients:
+  count: 200
+  policy: latency_based
+  geos: [asia]
+
+protocols: [tcp-h2, quic-h3]
+abr: buffer_based
+
+cache:
+  type: arc
+  size_bytes: 536870912
+  warm_up: false
+
+quic_settings:
+  zero_rtt_rate: 0.85
+
+playback:
+  prefetch_depth: 1
+  max_buffer_seconds: 30
+  startup_threshold_seconds: 2
+
+runs: 10
+
+output:
+  dir: results/depth1_startup
+  emit_json: true

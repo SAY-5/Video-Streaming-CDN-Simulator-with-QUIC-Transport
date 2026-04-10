@@ -1,0 +1,27 @@
+# docker/Dockerfile.origin — builds the cdn-sim origin server image.
+# Self-contained multi-stage build. See Dockerfile.base for the shared
+# pattern. Build context is the repository root (see docker-compose.yml).
+FROM golang:1.23-bookworm AS builder
+WORKDIR /app
+ENV GOTOOLCHAIN=auto
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o /origin-server ./cmd/origin-server
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \
+        iproute2 \
+        iptables \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /origin-server /app/origin-server
+# TLS certs are NOT baked into the image. docker-compose.yml mounts
+# ./docker/certs as /app/certs:ro at runtime, so the private key never
+# appears in any image layer and cannot be extracted via `docker save`.
+# See review round R1 finding H-3.
+EXPOSE 8443/tcp 8444/udp
+ENTRYPOINT ["/app/origin-server"]
+CMD ["--addr-h2=:8443","--addr-h3=:8444","--tls-cert=/app/certs/server.crt","--tls-key=/app/certs/server.key"]
