@@ -1,82 +1,160 @@
 # cdn-sim
 
-A simulator for comparing HTTP/3 (QUIC) and HTTP/2 (TCP) performance in a video streaming CDN. Written in Go.
+Ever wondered why some YouTube videos buffer like crazy while others play smooth? A lot of it comes down to the internet protocol carrying the video data. There are two main ones right now: the old reliable **TCP** (used by HTTP/2) and the newer **QUIC** (used by HTTP/3). Big companies like Google, Cloudflare, and Netflix have been switching to QUIC, claiming it's faster — but *when* is it actually faster, and by *how much*?
 
-I built this to answer a specific question: under what network conditions does switching from TCP to QUIC actually help for video delivery, and by how much? The short answer is that QUIC wins when there's packet loss (above ~1%) because it eliminates head-of-line blocking across multiplexed streams. On clean networks it performs about the same or slightly worse due to userspace CPU overhead. The long answer is the rest of this repo.
+That's what this project figures out.
 
-## How it works
+I built a simulator in Go that pretends to be a mini CDN (Content Delivery Network — basically the system of servers around the world that delivers video to your device). It creates fake viewers, fake video catalogs, fake network conditions with packet loss and latency, and then measures how long each video segment takes to arrive under both protocols. Then it runs statistics on the results so we're not just guessing — we actually know if the difference is real.
 
-There are two modes. The modeled mode runs entirely in-process: it simulates TCP and QUIC transports using a Gilbert-Elliott loss model, Reno congestion control, and models the HOL blocking difference between HTTP/2 (connection-level blocking) and HTTP/3 (per-stream recovery). This is fast — 120k segment simulations in about 12 seconds — and fully deterministic. Same seed, same config, bit-identical output.
+## The big picture, explained simply
 
-The emulated mode runs real `quic-go` HTTP/3 and `net/http` HTTP/2 servers inside Docker containers connected by `tc netem`-shaped bridges. Real packets, real loss, real TLS handshakes. Slower and noisier, but it validates that the modeled numbers aren't made up.
+When you watch a video online, your device doesn't download the whole thing at once. It grabs it in small pieces called **segments** (usually 2-4 seconds each). Your video player is always fetching the next few segments ahead of where you're watching — this is called **prefetching**.
 
-Both modes feed into the same metrics pipeline: bootstrap confidence intervals, Cohen's d effect sizes, Mann-Whitney U tests, and a set of matplotlib charts.
+Here's where the protocols differ:
+
+With **HTTP/2 over TCP**, all those prefetched segments travel through one shared pipe. If one packet gets lost (which happens all the time on the internet — WiFi drops, congested links, undersea cables), *everything* in that pipe has to wait while that one lost packet gets resent. This is called **head-of-line blocking**. It's like a single-lane road where one stalled car blocks everyone behind it.
+
+With **HTTP/3 over QUIC**, each segment gets its own independent lane. If a packet is lost for segment #5, only segment #5 waits for the resend. Segments #6 and #7 keep flowing. No shared traffic jam.
+
+This project simulates both scenarios thousands of times and measures the difference.
+
+## What did I find?
+
+Under the worst-case scenario I tested (200ms round-trip time, 3.6% packet loss — think someone in India streaming from a server in the US), QUIC cut the worst-case segment delivery time roughly in half and almost completely eliminated rebuffering (that spinning wheel you see when the video pauses to load).
+
+But here's the thing nobody tells you: on a clean network with barely any packet loss, **QUIC doesn't help at all**. It actually performs slightly worse because QUIC runs in software (userspace) rather than in the operating system kernel like TCP does, which costs more CPU. So the answer isn't "QUIC is always better" — it's "QUIC is better when the network is bad."
+
+The parameter sweep (testing every combination of loss rate from 0% to 7% and latency from 20ms to 200ms) shows the crossover point is around 1% packet loss. Below that, don't bother switching. Above that, QUIC wins and the advantage grows the worse the network gets.
+
+## How the simulator works
+
+There are two modes:
+
+**Modeled mode** does everything with math. It simulates packet loss using a Gilbert-Elliott model (a two-state random process that creates realistic *bursty* loss — packets tend to get lost in clumps, not one at a time), models congestion control (how fast the sender ramps up its sending speed), and calculates how head-of-line blocking affects each segment. This mode is fast — 120,000 segment simulations in about 12 seconds on a laptop — and completely deterministic. Run it twice with the same config, get bit-identical output.
+
+**Emulated mode** runs actual HTTP/2 and HTTP/3 servers in Docker containers with Linux `tc netem` shaping the network between them (adding artificial delay, loss, and jitter). Real packets on real sockets with real TLS handshakes. It's slower and noisier, but it validates that the modeled numbers are in the right ballpark and not just artifacts of my math being wrong.
+
+Both modes feed into the same statistics pipeline that computes confidence intervals (so you know the range of plausible results, not just a single number), effect sizes (how big the difference actually is in practical terms), and significance tests (whether the difference is real or just random noise).
 
 ## Quick start
 
 ```bash
+git clone https://github.com/SAY-5/Video-Streaming-CDN-Simulator-with-QUIC-Transport.git
+cd Video-Streaming-CDN-Simulator-with-QUIC-Transport
 make build
 make run-modeled
+```
+
+That's it. It builds the simulator, runs the flagship scenario (200 clients in Asia, Singapore and Mumbai edge servers, US-East origin, 3.6% bursty loss, 200ms RTT), and prints a summary showing how much better QUIC performed.
+
+If you have Python 3 with matplotlib installed, you can also generate charts:
+
+```bash
 python3 scripts/analysis/compare.py results/reproduce_35pct
 ```
 
-The flagship scenario (`configs/reproduce_35pct.yaml`) models 200 clients in Asia fetching video through Singapore and Mumbai edges to a US-East origin. The path has ~3.6% bursty loss at 200ms RTT. With prefetch depth 3, QUIC shows a ~54% p95 segment latency improvement and virtually eliminates rebuffering. The emulated mode cross-validates this: the modeled prediction falls inside the emulated confidence interval.
+This gives you four PNGs: a latency percentile comparison, a CDF (cumulative distribution), a bitrate timeline, and an improvement summary bar chart.
 
-The output includes a human-readable summary with significance stars, per-segment CSV data, JSON aggregates, and (if matplotlib is installed) four chart PNGs.
+## Running a parameter sweep
 
-## Sweep
-
-The sweep mode runs a cross-product of parameters. `configs/sweep_loss_rtt.yaml` sweeps loss rate (0-7%) against RTT (20-200ms) and produces a heatmap:
+Want to see *exactly* where QUIC starts winning? The sweep mode tests every combination of parameters:
 
 ```bash
 bin/cdnsim sweep --config configs/sweep_loss_rtt.yaml
 python3 scripts/analysis/sweep_heatmap.py results/sweep_loss_rtt
 ```
 
-The heatmap tells you where to deploy HTTP/3 and where not to bother.
+This produces a heatmap with loss rate on one axis and latency on the other. Green cells = QUIC wins. Red cells = TCP wins (or they're about the same). You can visually see the boundary where deploying HTTP/3 starts making sense.
 
-## Emulated mode
+## Emulated mode (real servers in Docker)
 
-You need Docker (Colima works well on macOS):
+If you want to validate the modeled results with real network traffic:
 
 ```bash
+# macOS — Colima gives you a Linux VM with tc/netem support
 brew install colima docker docker-compose
 colima start --cpu 4 --memory 6 --disk 30
-make docker-up
-bash scripts/netem/apply_topology.sh harsh_asia
+
+make docker-up                                  # builds containers, generates TLS certs
+bash scripts/netem/apply_topology.sh harsh_asia  # shapes the network links
 docker compose -f docker/docker-compose.yml exec -T client \
     /app/cdnsim run --config /configs/emulated_lossy.yaml --output-dir /results/emulated_lossy
-make docker-down
+make docker-down                                # tears everything down
 ```
 
-The stack is 5 containers on 3 bridge networks: origin, regional shield, two edge PoPs (Singapore, Mumbai), and a client driver. Each network segment gets its own netem profile so you can shape the access link, regional hop, and intercontinental path independently.
+The Docker stack has 5 containers connected by 3 networks: an origin server, a regional shield (mid-tier cache), two edge servers (Singapore and Mumbai), and a client that drives the test. Each network link gets its own loss/delay/jitter profile, so you can shape the "last mile" (client to edge) differently from the "backbone" (edge to origin).
 
-Certs are self-signed ECDSA P-256, mounted at runtime (not baked into image layers). The edge server does real TLS verification against the CA cert when one is provided.
+## Project structure
+
+If you want to poke around the code:
+
+```
+cmd/cdnsim/              the CLI — parses flags, loads config, calls the runner
+cmd/origin-server/       real HTTP/2 + HTTP/3 origin for emulated mode
+cmd/edge-server/         real HTTP/2 + HTTP/3 caching edge for emulated mode
+
+internal/
+  experiment/            the runner that orchestrates everything
+  transport/modeled/     the math — loss model, congestion control, TCP vs QUIC
+  transport/emulated/    real HTTP clients for Docker mode
+  video/                 the video player, ABR algorithms, manifest generation
+  cache/                 LRU and ARC (adaptive replacement cache) implementations
+  cdn/                   origin shield logic
+  routing/               how clients get assigned to edge servers
+  analysis/              bootstrap CIs, Cohen's d, Mann-Whitney U
+  metrics/               collects and aggregates per-segment results
+
+configs/                 YAML files defining different scenarios
+docker/                  Dockerfiles and compose config
+scripts/                 network shaping scripts and Python analysis/charting
+docs/                    architecture decision records and walkthroughs
+```
+
+## Key concepts if you're new to this
+
+**CDN (Content Delivery Network):** Instead of everyone fetching video from one server far away, copies are cached on servers closer to the viewer. Netflix has edge servers in most major cities. This project simulates that — the "edge" servers cache popular video segments so they don't have to be fetched from the "origin" every time.
+
+**Packet loss:** The internet isn't perfect. Packets (small chunks of data) sometimes get dropped — maybe a router's buffer overflowed, or there was interference on a WiFi link. Loss rates of 1-5% are common on mobile networks and international links. The simulator models this with a Gilbert-Elliott process, which is a fancy way of saying "losses come in bursts" rather than being evenly spread out. This matters because bursty loss is much worse for TCP than scattered loss.
+
+**Round-trip time (RTT):** How long it takes a message to go from your device to the server and back. Talking to a server in your city might be 5-20ms. Talking to a server across the ocean is 100-200ms. Higher RTT means every retransmission costs more time.
+
+**ABR (Adaptive Bitrate):** The video player constantly adjusts the quality based on how fast segments are arriving. If the network is fast, you get 4K. If it slows down, you get 720p. The simulator uses Buffer-Based Adaptation (BBA) — it watches how full the playback buffer is and adjusts quality accordingly, similar to what Netflix uses.
+
+**ARC (Adaptive Replacement Cache):** A smart caching algorithm that keeps track of both recently-used and frequently-used items, and adapts the balance between the two based on what the workload actually looks like. It's better than simple LRU (least recently used) for video because it resists "scan pollution" — when someone watches a video straight through, each segment is only accessed once, and under LRU those one-time segments would push out popular content that other viewers need.
 
 ## What I learned building this
 
-The HOL blocking model went through three iterations. The first version applied a flat `lossEvents * RTT` penalty to every stream in a batch, which overstated the effect. The second version made every stream wait for the full connection transfer time, which was correct under loss but wrong at 0% loss (no gap means no blocking). The final version is a binary model: at 0% loss, streams complete proportionally; under loss, all streams wait for the connection. It's a simplification — reality is somewhere between proportional and full-connection depending on where the loss occurs — but it captures the right physics.
+The HOL blocking model went through three tries before I got it right. The first version applied a flat penalty to every stream when loss occurred, which overstated the effect. The second made every stream wait for the entire connection, which was right under loss but wrong when there was no loss. The final version switches between two behaviors: proportional completion when there's no loss, full-connection waiting when there is. It's not perfect — in reality the impact depends on exactly *where* in the byte stream the loss happens — but it captures the right physics.
 
-I also found bugs in my own ARC cache implementation during code review. Case IV.B in the original Megiddo & Modha paper says you should move T1's LRU to B1 as a ghost entry when the cache is full. My code was deleting it entirely, which meant the ghost list never grew and the adaptive p parameter never learned. The test I wrote to catch this (`TestARCB1GhostHitGrowsP`) would have found the bug on day one if I'd written it first.
+I also found a bug in my ARC cache during code review. The original paper (Megiddo & Modha 2003) says that when the cache is full and you need to evict something, you should move it to a "ghost list" — a record of recently evicted items that helps the cache learn. My code was just deleting items outright, which meant the ghost list stayed empty and the cache never learned to adapt. The test I wrote after finding this (`TestARCB1GhostHitGrowsP`) would've caught it immediately if I'd written tests first. Lesson learned.
 
-The reference data in `internal/experiment/reference.go` cites five sources I actually looked up: Langley et al. 2017 (SIGCOMM), Cloudflare 2020, Meta 2020, Kosek et al. 2021, and Akamai 2023. Kosek 2021 is interesting because it contradicts Langley: in their large-scale measurement, HTTP/3 and HTTP/2 performed about the same under high packet loss once you factor in real website infrastructure. The envelope in reference.go includes both views.
+## Limitations (being honest)
 
-## Limitations
+- The congestion control model is Reno (the simplest textbook algorithm). Most real systems use Cubic, which recovers faster after loss. I don't know if switching would make the QUIC advantage bigger or smaller.
+- The HOL blocking model is binary — either loss blocks everything or nothing. A packet-level model would be more accurate but way more complex.
+- At prefetch depth 1 (fetching one segment at a time), TCP and QUIC perform identically because there's nothing to head-of-line block. The QUIC advantage only appears when you're fetching multiple segments simultaneously. This is correct behavior, but it means the "prefetch depth" setting matters a lot.
+- The loss model is stationary — the probabilities don't change over time. Real network loss waxes and wanes.
+- No connection migration, no UDP throttling by middleboxes, no hardware offload. The simulator answers "how much does the *protocol* matter?" not "what will my exact production numbers be?"
 
-These are real and I don't want to pretend they aren't:
+## Testing
 
-- The congestion model is Reno, not Cubic or BBR. Most production QUIC stacks use Cubic. Reno is simpler to implement and reason about but recovers differently after loss. I don't know whether switching to Cubic would widen or narrow the gap.
-- The HOL blocking model is binary (proportional vs full connection). A per-packet model that tracks which bytes belong to which stream would be more accurate but significantly more complex.
-- At prefetch depth 1 (single stream fetches), TCP and QUIC produce nearly identical segment latencies because they share the same congestion model. The QUIC advantage only shows up when multiple streams are multiplexed. This is correct behavior, not a bug, but it means the result depends on the prefetch depth knob.
-- The loss model is stationary — the Gilbert-Elliott transition probabilities don't change over time. Real network loss is more variable.
-- There's no connection migration, no UDP rate limiting by middleboxes, no NIC offload, no kernel bypass. The simulator answers "how much does the transport protocol matter?" not "what will my production improvement be?"
-- QUIC's CPU cost is roughly 2x TCP (per Langley 2017, post-optimization). The latency numbers don't account for this.
+```bash
+make test  # runs go test ./... -race -count=1
+```
 
-## Extending
+12 packages with tests, all passing under Go's race detector. Coverage varies by package — the analysis code is at 85%, the cache at 67%, transport models around 77%. The ARC cache has regression tests specifically for the ghost-list bugs I found during development. The statistics package has property-based tests that verify the bootstrap produces the right coverage probability and the Mann-Whitney test has correct type-I error rates.
 
-To add a new transport, implement `transport.Transport`. To add a new ABR algorithm, implement `video.ABRAlgorithm`. To add a new cache policy, implement `cache.Cache`. To add a new routing policy, implement `routing.RoutingPolicy`. Each has a registration point in `internal/experiment/runner.go` that you can grep for.
+## Docs
 
-## CLI
+- `docs/adr/` — 7 architecture decision records explaining *why* I made the choices I did (why Gilbert-Elliott over uniform loss, why ARC over LRU, why Reno and not Cubic, etc.)
+- `docs/CODEMAP.md` — a walkthrough of how the code is organized, following the execution path from CLI to transport model
+- `docs/EXECUTIVE_SUMMARY.md` — a one-pager for people who don't want to read code
+
+## What's next
+
+I want to add Cubic congestion control alongside Reno to see how the comparison changes. A per-packet HOL model that tracks which bytes belong to which stream would be more realistic. And the emulated mode could use way more test sessions — 24 is enough to detect big effects but you'd want 200+ for subtle ones.
+
+## CLI reference
 
 ```
 cdnsim run      --config <yaml> [--output-dir <dir>] [--verbose] [--profile]
@@ -85,22 +163,4 @@ cdnsim sweep    --config <yaml> [--output-dir <dir>] [--verbose]
 cdnsim analyze  --results-dir <dir>
 ```
 
-`make` wraps these: `build`, `test`, `run-modeled`, `sweep`, `docker-up`, `docker-down`, `run-emulated`, `analysis`, `full-suite`.
-
-## Testing
-
-```bash
-make test  # go test ./... -race -count=1
-```
-
-12 packages with tests, all passing under the race detector. Coverage varies: analysis at 85%, cache at 67%, the transport models around 77%. The ARC cache has specific regression tests for the ghost-list bugs found during review. The statistics package has property-based tests for bootstrap coverage probability and Mann-Whitney type-I error rates.
-
-## Docs
-
-- `docs/adr/` has 7 architectural decision records covering the major design choices (why Gilbert-Elliott over uniform loss, why ARC over LRU, why Reno and not Cubic, etc.)
-- `docs/CODEMAP.md` walks through the execution flow from CLI to transport model
-- `docs/EXECUTIVE_SUMMARY.md` is a one-page summary you could hand to someone who doesn't want to read code
-
-## What's next
-
-I'd like to add Cubic congestion control alongside Reno to see how the comparison changes. A per-packet HOL model (tracking byte-to-stream assignment) would be more accurate than the binary approximation. And the emulated mode could use more sessions for tighter confidence intervals — 24 sessions works for detecting large effects but you'd want 200+ for anything subtle.
+`make` wraps these for common workflows: `build`, `test`, `run-modeled`, `sweep`, `docker-up`, `docker-down`, `run-emulated`, `analysis`, `full-suite`.
