@@ -1,49 +1,44 @@
 # ADR-004: Buffer-Based ABR (BBA) for Bitrate Adaptation
 
-## Status
-Accepted
-
 ## Context
 
-Adaptive Bitrate (ABR) algorithms determine which quality level the video player requests for each segment. The ABR choice affects both the QoE metrics we measure (average bitrate, rebuffer rate, bitrate stability) and the transport-level behavior (higher bitrates produce larger segments, which take longer to transfer and expose more packets to loss).
+Adaptive Bitrate (ABR) algorithms determine which quality level the video player requests for each segment. The ABR choice affects both the QoE metrics we measure (average bitrate, rebuffer rate, bitrate stability) and transport-level behavior -- higher bitrates mean larger segments, longer transfers, and more packets exposed to loss.
 
-For a transport comparison study, the ABR algorithm must be:
+For a transport comparison study, the ABR algorithm needs to be deterministic given the same inputs (no neural net inference or online learning that varies across runs), responsive to transport differences (if QUIC delivers faster, the ABR should capitalize by selecting higher bitrates), and realistic enough that the QoE improvements we measure are credible.
 
-1. **Deterministic** given the same inputs -- no neural network inference or online learning that varies across runs.
-2. **Responsive to transport differences** -- if QUIC delivers segments faster than TCP, the ABR should capitalize by selecting higher bitrates.
-3. **Realistic** -- the algorithm should resemble what production players actually use, so the QoE improvements we measure are credible.
-
-The key signal that distinguishes TCP from QUIC in our simulation is **segment delivery time**. Under loss, TCP's HOL blocking inflates delivery times for all concurrent segments, while QUIC's per-stream recovery keeps fast streams fast. The ABR algorithm must translate these delivery-time differences into observable QoE differences.
+The key signal distinguishing TCP from QUIC in our simulation is segment delivery time. Under loss, TCP's HOL blocking inflates delivery times for all concurrent segments, while QUIC's per-stream recovery keeps fast streams fast. The ABR needs to translate those delivery-time differences into observable QoE differences.
 
 ## Decision
 
 We implement Buffer-Based Adaptation (BBA, Huang et al. 2014) as the default ABR algorithm (`internal/video/abr_buffer.go`, `BufferBasedABR`). BBA uses the client's playback buffer level as the primary signal, with four zones:
 
-- **Critical** (buffer < 2s): Select the lowest bitrate immediately. The player is about to rebuffer.
-- **Danger** (buffer < 6s): Hold or decrease bitrate. Do not increase. If the last measured throughput is below the current bitrate, step down one level.
-- **Comfort** (6s - 15s): Linear interpolation between the lowest and highest available bitrate. Higher buffer = higher bitrate.
-- **Surplus** (buffer > 15s): Select the highest available bitrate. The buffer is healthy.
+- *Critical* (buffer < 2s): select the lowest bitrate immediately. The player is about to rebuffer.
+- *Danger* (buffer < 6s): hold or decrease. Don't increase. If last measured throughput is below current bitrate, step down one level.
+- *Comfort* (6s - 15s): linear interpolation between lowest and highest available bitrate. Higher buffer = higher bitrate.
+- *Surplus* (buffer > 15s): select the highest available bitrate.
 
-**Hysteresis** prevents oscillation: if the target bitrate computed by the comfort-zone interpolation is within one representation level of the current bitrate, the player holds steady. This avoids rapid up-down-up-down switches that degrade visual quality.
+Hysteresis prevents oscillation: if the target bitrate from comfort-zone interpolation is within one representation level of the current bitrate, the player holds steady. This avoids rapid up-down-up-down switches that degrade visual quality.
 
-BBA is the right choice for a transport comparison because:
+BBA is the right fit for a transport comparison because:
 
-- **Buffer level naturally integrates transport performance.** If QUIC delivers segments 30% faster, the buffer grows faster, BBA selects higher bitrates, and we observe higher average bitrate in the metrics. If TCP's HOL blocking stalls a batch, the buffer drains, BBA drops to a lower bitrate, and we observe more bitrate switches and potentially rebuffers.
-- **No throughput estimation bias.** Throughput-based ABR (also implemented as `abr_throughput.go`) estimates available bandwidth from recent segment fetches. Cache hits return in ~1ms and inflate the estimate, causing the player to overshoot. We fixed this in the player (the `HIGH fix from review R1` at line 268 of `player.go` excludes cache-hit bytes from the throughput sample), but buffer-based ABR sidesteps the issue entirely.
-- **Deterministic.** Given the same buffer level and manifest, BBA always produces the same decision. There is no learned state or random exploration.
+Buffer level naturally integrates transport performance. If QUIC delivers segments 30% faster, the buffer grows faster, BBA selects higher bitrates, and we see higher average bitrate in the metrics. If TCP's HOL blocking stalls a batch, the buffer drains, BBA drops quality, and we see more bitrate switches and potentially rebuffers.
+
+It also sidesteps a throughput estimation problem. Throughput-based ABR (also implemented as `abr_throughput.go`) estimates bandwidth from recent segment fetches, but cache hits return in ~1ms and inflate the estimate, causing the player to overshoot. We did fix this in the player (the `HIGH fix from review R1` at line 268 of `player.go` excludes cache-hit bytes from the throughput sample), but buffer-based ABR avoids the issue entirely.
+
+And it's deterministic -- given the same buffer level and manifest, BBA always produces the same decision. No learned state, no random exploration.
 
 ## Consequences
 
-**Transport sensitivity:** BBA translates delivery-time differences into bitrate differences with a lag of 1-2 segments (the time for the buffer level to change). This is realistic -- production players exhibit similar inertia. The danger zone and hysteresis prevent the ABR from overreacting to single-segment anomalies.
+BBA translates delivery-time differences into bitrate differences with a lag of 1-2 segments (the time for the buffer level to change). This is realistic -- production players exhibit similar inertia. The danger zone and hysteresis prevent overreacting to single-segment anomalies.
 
-**Conservative in the comfort zone:** The linear interpolation in the comfort zone means BBA does not aggressively pursue the highest bitrate when the buffer is moderately healthy. This is deliberate: BBA prioritizes rebuffer avoidance over bitrate maximization, matching the preference of most streaming services (Netflix, YouTube).
+The linear interpolation in the comfort zone means BBA doesn't aggressively pursue the highest bitrate when the buffer is moderately healthy. This is deliberate -- BBA prioritizes rebuffer avoidance over bitrate maximization, matching the preference of most streaming services (Netflix, YouTube).
 
-**Throughput-based ABR as a second option:** We also implement `ThroughputBasedABR` for comparison. It selects the highest bitrate that does not exceed the harmonic mean of recent throughput samples. This is available via `abr: throughput_based` in the YAML config but is not the default because it is more sensitive to cache-hit throughput inflation.
+We also implement `ThroughputBasedABR` for comparison. It selects the highest bitrate not exceeding the harmonic mean of recent throughput samples. Available via `abr: throughput_based` in YAML config but isn't the default because it's more sensitive to cache-hit throughput inflation.
 
 ## Alternatives Considered
 
-**Throughput-only ABR:** Estimates available bandwidth and selects the highest bitrate below that estimate. This is what early DASH players (dash.js < v3) used. The problem is that throughput estimation is noisy: a single cache hit or a single HOL-blocked segment can swing the estimate dramatically, causing oscillation. We provide this as an option but default to BBA.
+*Throughput-only ABR:* Estimates available bandwidth and picks the highest bitrate below that. This is what early DASH players (dash.js < v3) used. Throughput estimation is noisy though -- a single cache hit or a single HOL-blocked segment can swing the estimate dramatically and cause oscillation. We provide it as an option but default to BBA.
 
-**Pensieve (neural ABR, Mao et al. 2017):** Uses a neural network trained via reinforcement learning to map (buffer, throughput, segment sizes) to a bitrate decision. Pensieve achieves state-of-the-art QoE in controlled evaluations, but it introduces non-determinism (floating-point order-of-operations in the NN), requires a trained model checkpoint, and adds a Python/ONNX dependency. These are disqualifying for a deterministic simulation study. We would need to retrain the model for each network condition, which defeats the purpose of a parameter sweep.
+*Pensieve (neural ABR, Mao et al. 2017):* Uses a neural network trained via RL to map (buffer, throughput, segment sizes) to a bitrate decision. State-of-the-art QoE in controlled evaluations, but introduces non-determinism (floating-point order-of-operations in the NN), requires a trained model checkpoint, and adds a Python/ONNX dependency. Disqualifying for a deterministic simulation study. We'd also need to retrain for each network condition, which defeats the purpose of a parameter sweep.
 
-**MPC (Model Predictive Control, Yin et al. 2015):** Formulates bitrate selection as an optimization problem over the next K segments, maximizing a QoE objective (bitrate - rebuffer penalty - switch penalty). MPC requires a throughput prediction model and solves a combinatorial optimization at each step. The computational cost is acceptable, but the throughput prediction model introduces the same cache-hit inflation problem as throughput-based ABR. MPC also has tunable weights for the QoE objective, and different weight settings would change the TCP-vs-QUIC comparison, adding a confound we want to avoid.
+*MPC (Model Predictive Control, Yin et al. 2015):* Formulates bitrate selection as optimization over the next K segments, maximizing a QoE objective (bitrate - rebuffer penalty - switch penalty). Requires a throughput prediction model, which has the same cache-hit inflation problem. MPC also has tunable weights for the QoE objective, and different weight settings would change the TCP-vs-QUIC comparison -- adding a confound we want to avoid.
