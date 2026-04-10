@@ -1,91 +1,54 @@
-# cdn-sim Code Map
+# How the code is organized
 
-Understand the full system in 15 minutes by following the execution flow.
+If you want to understand how this works, start at `cmd/cdnsim/main.go` and follow the calls down. Here's the path.
 
-## Entry point: `cmd/cdnsim/main.go`
+## CLI → runner
 
-Parses CLI subcommands (`run`, `validate`, `sweep`, `analyze`), loads YAML config via `experiment.LoadConfig`, dispatches to the appropriate runner. Supports `--profile` for CPU/memory profiling.
+`cmd/cdnsim/main.go` parses flags, loads a YAML config, and hands it to `experiment.Runner`. The runner loops over (protocol, run index) pairs. For each pair it builds a topology (edges with caches, an optional shield, a popularity generator), creates clients, routes them to edges, and runs playback sessions. Modeled mode (`runOne`) uses in-process transport models; emulated mode (`runOneEmulated`) makes real HTTP requests to Docker containers.
 
-## The experiment loop: `internal/experiment/runner.go`
+## The playback session
 
-This is the orchestrator. For each (protocol x run):
+`internal/video/player.go` is where most of the interesting behavior lives. It fetches segments in batches of `PrefetchDepth`:
 
-1. **Seeds RNG** deterministically from `config.Seed + runIdx` (no protocol salt — both protocols see the same loss patterns for fair comparison)
-2. **Builds topology**: edges with per-edge caches, optional origin shield
-3. **Generates content catalog**: Zipf-distributed popularity via `internal/cache/popularity.go`
-4. **Creates client population**: geo-distributed, sorted by ID for deterministic iteration
-5. **Routes each client** to an edge via `internal/routing/` (anycast)
-6. **Runs playback sessions**: manifest generation, transport construction, ABR-driven fetch loop
-7. **Collects metrics** into `internal/metrics/collector.go`
+1. The ABR algorithm picks a bitrate based on current buffer level and throughput history. `abr_buffer.go` (BBA with danger zones) is the default; `abr_throughput.go` (EWMA with safety margin) is the alternative.
+2. The player checks the edge cache for each segment in the batch. Hits return in ~1ms.
+3. Misses go through the shield (if present) and then the transport.
+4. The transport returns per-segment latencies. The batch's wall-clock cost is the max of these latencies — all segments arrive together since they're fetched concurrently.
+5. The player drains the buffer by the fetch time (playback continued during the fetch), adds the batch's worth of video duration, and checks for rebuffering.
+6. Throughput is computed from miss-only bytes to avoid inflating the estimate with cache hits.
 
-Two modes: `runOne` (modeled — pure Go transport models) and `runOneEmulated` (real HTTP/2+HTTP/3 via Docker).
+## Transport models
 
-## The playback loop: `internal/video/player.go`
+These live in `internal/transport/modeled/` and this is where the TCP-vs-QUIC difference actually happens.
 
-The heart of the simulator. For each batch of `PrefetchDepth` segments:
+`loss.go` implements a Gilbert-Elliott two-state Markov chain. The loss simulator has its own child RNG isolated from the jitter RNG so that both protocols see identical loss sequences for the same client and run.
 
-1. **ABR selects bitrate** → `abr_buffer.go` (BBA with danger zones) or `abr_throughput.go` (EWMA)
-2. **Check edge cache** → `internal/cache/arc.go` or `lru.go`
-3. **On miss**: check shield → `internal/cdn/shield.go`
-4. **On shield miss**: fetch from origin via transport
-5. **Transport layer** → `internal/transport/modeled/tcp.go` or `quic.go` (or emulated equivalents)
-6. **Update buffer**, detect rebuffer, record per-segment metrics
-7. **Compute throughput** (excluding cache-hit bytes) for ABR feedback
+`congestion.go` models Reno: slow-start doubling per RTT, congestion avoidance adding 1 MSS per RTT, halving on loss. It returns the number of RTTs needed to transfer N bytes given a list of loss offsets.
 
-Key design: `fetchTime = max(batch latencies)`. Buffer drains by `fetchTime` during playback. Batch enters buffer as `batchSize * segmentDuration`.
+`tcp.go` `FetchConcurrent` is the core of the HOL blocking model. At 0% loss, each stream completes at its proportional share of the connection time — same as QUIC. Under loss, all streams wait for the full connection time because TCP delivers bytes in order and a gap blocks everything after it. This binary model is a simplification (reality depends on where the loss falls relative to each stream's bytes) but gets the direction right.
 
-## The transport model: `internal/transport/modeled/`
+`quic.go` `FetchConcurrent` uses a shared congestion controller across all streams (matching real quic-go behavior) but per-stream loss recovery. A loss on stream A adds one RTT to stream A without affecting stream B. This is the HOL blocking difference.
 
-- **`loss.go`**: Gilbert-Elliott two-state Markov chain (GOOD/BAD). NoLoss and UniformLoss alternatives. Loss simulator has its own child RNG isolated from jitter draws.
-- **`congestion.go`**: Reno slow-start (cwnd doubles per RTT) + congestion avoidance (cwnd += MSS per RTT). Loss triggers ssthresh = cwnd/2.
-- **`tcp.go`**: **THE key differentiator**. `FetchConcurrent` at 0% loss: each stream completes proportionally (share x connTransferTime). Under loss: ALL streams wait for the full connTransferTime because TCP delivers bytes in-order — a gap anywhere blocks everything after it. This binary model captures the essential HOL-blocking physics.
-- **`quic.go`**: `FetchConcurrent` uses one SHARED congestion controller (not per-stream). Each stream gets share x connTransferTime + per-stream loss recovery (only affected stream pays retransmit RTT). HOLBlockEvents is always 0.
-- **`bandwidth.go`**: 3-state Markov bandwidth trace (LOW/MED/HIGH) for mobile variability.
-- **`jitter.go`**: Half-normal jitter via Box-Muller transform.
+## Statistics
 
-## The statistical pipeline: `internal/analysis/` + `internal/metrics/`
+`internal/analysis/statistics.go` has the math: bootstrap resampling, Cohen's d with pooled sample variance, Mann-Whitney U with normal approximation, ECDF. `internal/metrics/collector.go` accumulates results and delegates to these functions. `internal/metrics/comparison.go` produces the enhanced comparison with CIs, effect sizes, p-values, and a verdict label.
 
-- **`analysis/statistics.go`**: Bootstrap CI, Cohen's d (pooled sample variance), Mann-Whitney U (normal approximation), ECDF, BootstrapImprovement (two-sample CI for improvement %)
-- **`metrics/collector.go`**: Accumulates PlaybackResults, produces AggregatedMetrics per protocol. Delegates all stat helpers to `internal/analysis` (single source of truth).
-- **`metrics/comparison.go`**: EnhancedComparison with 9 metrics x {improvement%, 95% CI, effect size, p-value, significance}. Verdict logic: negligible/moderate/large/dominant.
-- **`experiment/summary_pretty.go`**: Box-drawing UTF-8 summary printer with p-value stars.
+## Caches
 
-## The sweep engine: `internal/experiment/sweep.go`
+`internal/cache/arc.go` implements the full ARC algorithm from Megiddo & Modha 2003, including ghost lists (B1/B2) for adaptive partition sizing. There's a bug story here: the original implementation had a broken Case IV.B where evicted items weren't moved to the ghost list, so the adaptive parameter never learned. Regression tests for the ghost-list behavior are in `arc_ghost_test.go`.
 
-Cross-product of parameter values (e.g. loss_pct x rtt_ms) → `applyOverride` patches config → runs full experiment for each combination → writes `sweep_index.json` + `heatmap.json`.
+## Sweep
 
-## Key interfaces (extension points):
+`internal/experiment/sweep.go` takes a base config and a list of parameters to vary, generates the cross-product, runs each combination, and writes a `heatmap.json` for the Python visualization script to consume.
 
-| Interface | Package | Add new... |
-|---|---|---|
-| `transport.Transport` | `internal/transport/` | TCP/QUIC variants, SRT, WebRTC |
-| `routing.RoutingPolicy` | `internal/routing/` | Anycast policies |
-| `video.ABRAlgorithm` | `internal/video/` | Bitrate selection algorithms |
-| `cache.Cache` | `internal/cache/` | Eviction policies |
-| `modeled.LossSimulator` | `internal/transport/modeled/` | Loss models |
+## Extension points
 
-## File tree (abridged)
+If you want to add something, these are the interfaces to implement:
 
-```
-cmd/cdnsim/              CLI entry point
-cmd/origin-server/       Real HTTP/2 + HTTP/3 origin
-cmd/edge-server/         Real HTTP/2 + HTTP/3 caching edge
-internal/
-  analysis/              Bootstrap, Cohen's d, Mann-Whitney, ECDF
-  cache/                 LRU, ARC, Zipf popularity
-  cdn/                   Origin shield
-  experiment/            Config, runner, sweep, reporter, validation, reference
-  metrics/               Aggregation, enhanced comparison
-  routing/               Latency/weighted/geo/BGP policies, haversine
-  serverapi/             Shared HTTP API contract
-  servertls/             Self-signed cert generation
-  transport/             Transport interface
-  transport/modeled/     Gilbert-Elliott, Reno, TCP/QUIC models
-  transport/emulated/    Real HTTP/2+HTTP/3 clients, CPU tracker, TCP_INFO
-  video/                 Manifest, ABR (BBA + throughput), playback session
-configs/                 YAML scenarios
-docker/                  Dockerfiles, compose, certs
-scripts/                 netem, analysis (matplotlib + Chart.js)
-docs/                    ADRs, codemap, executive summary
-test/                    Integration + determinism
-```
+- `transport.Transport` — new transport protocol
+- `routing.RoutingPolicy` — new anycast policy
+- `video.ABRAlgorithm` — new bitrate selection
+- `cache.Cache` — new eviction policy
+- `modeled.LossSimulator` — new loss model
+
+Each has a builder function in `runner.go` where you register the new implementation.
